@@ -34,6 +34,31 @@ module Expr =
     *)
     let update x v s = fun y -> if x = y then v else s y
 
+        (* Make a bool operator return int; useful since every expression should evaluate to int *)
+    let make_bool_result_int op x y =
+        let v = op x y in
+        if v then 1 else 0
+
+    let make_bool_inputs_int op x y = op (x != 0) (y != 0)
+
+
+    let get_op op =
+        match op with
+        | "+"  -> ( + )
+        | "-"  -> ( - )
+        | "*"  -> ( * )
+        | "/"  -> ( / )
+        | "%"  -> ( mod )
+        | "<"  -> make_bool_result_int ( < )
+        | "<=" -> make_bool_result_int ( <= )
+        | ">"  -> make_bool_result_int ( > )
+        | ">=" -> make_bool_result_int ( >= )
+        | "==" -> make_bool_result_int ( == )
+        | "!=" -> make_bool_result_int ( <> )
+        | "&&" -> make_bool_result_int @@ make_bool_inputs_int ( && )
+        | "!!" -> make_bool_result_int @@ make_bool_inputs_int ( || )
+        | _ -> failwith (Printf.sprintf "Unknown operator %s" op)
+        
     (* Expression evaluator
 
           val eval : state -> t -> int
@@ -41,7 +66,12 @@ module Expr =
        Takes a state and an expression, and returns the value of the expression in 
        the given state.
     *)
-    let eval _ = failwith "Not implemented yet"
+
+    let rec eval s e =
+        match e with
+        | Const c -> c
+        | Var v -> s v
+        | Binop (op, e1, e2) -> (get_op op) (eval s e1) (eval s e2)
 
   end
                     
@@ -65,7 +95,15 @@ module Stmt =
 
        Takes a configuration and a statement, and returns another configuration
     *)
-    let eval _ = failwith "Not implemented yet"
+    let rec eval config e = 
+        match e with
+        | Read name -> 
+            let s, z :: i, o = config in (Expr.update name z s, i, o)
+        | Write ex ->
+            let s, i, o = config in (s, i, o @ [Expr.eval s ex])
+        | Assign (name, ex) ->
+            let s, i, o = config in (Expr.update name (Expr.eval s ex) s, i, o)
+        | Seq (a, b) -> eval (eval config a) b
                                                          
   end
 
