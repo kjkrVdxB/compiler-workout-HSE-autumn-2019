@@ -24,7 +24,28 @@ type config = int list * Stmt.config
 
    Takes a configuration and a program, and returns a configuration as a result
  *)                         
-let eval _ = failwith "Not yet implemented"
+let rec eval config prg = 
+    match prg with
+    | [] -> config
+    | (f :: rest) -> 
+        match f with
+        | BINOP op -> 
+            let y :: x :: st, c = config in
+            eval (((Expr.get_op op) x y) :: st, c) rest
+        | CONST i ->
+            let st, c = config in eval (i :: st, c) rest
+        | READ ->
+            let (st, (s, z :: i, o)) = config in
+            eval (z :: st, (s, i, o)) rest
+        | WRITE ->
+            let (z :: st, (s, i, o)) = config in
+            eval (st, (s, i, o @ [z])) rest
+        | LD x ->
+            let (st, (s, i, o)) = config in
+            eval ((s x) :: st, (s, i, o)) rest
+        | ST x ->
+            let (z :: st, (s, i, o)) = config in
+            eval (st, (Expr.update x z s, i, o)) rest
 
 (* Top-level evaluation
 
@@ -34,6 +55,12 @@ let eval _ = failwith "Not yet implemented"
 *)
 let run p i = let (_, (_, _, o)) = eval ([], (Language.Expr.empty, i, [])) p in o
 
+let rec compile_ex expr =
+    match expr with
+    | Expr.Const n -> [CONST n]
+    | Expr.Var x -> [LD x]
+    | Expr.Binop (op, e1, e2) -> (compile_ex e1) @ (compile_ex e2) @ [BINOP op]
+
 (* Stack machine compiler
 
      val compile : Language.Stmt.t -> prg
@@ -41,4 +68,9 @@ let run p i = let (_, (_, _, o)) = eval ([], (Language.Expr.empty, i, [])) p in 
    Takes a program in the source language and returns an equivalent program for the
    stack machine
  *)
-let compile _ = failwith "Not yet implemented"
+let rec compile stmt =
+    match stmt with
+    | Stmt.Read x -> [READ; ST x]
+    | Stmt.Write ex -> (compile_ex ex) @ [WRITE]
+    | Stmt.Assign (x, ex) -> (compile_ex ex) @ [ST x]
+    | Stmt.Seq (s1, s2) -> (compile s1) @ (compile s2)
