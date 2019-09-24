@@ -5,7 +5,8 @@ open GT
 
 (* Opening a library for combinator-based syntax analysis *)
 open Ostap.Combinators
-       
+open Ostap
+
 (* Simple expressions: syntax and semantics *)
 module Expr =
   struct
@@ -37,7 +38,9 @@ module Expr =
     *)
     let update x v s = fun y -> if x = y then v else s y
 
-        (* Make a bool operator return int; useful since every expression should evaluate to int *)
+    (* Make a bool operator return int; useful since every expression should
+      evaluate to int
+    *)
     let make_bool_result_int op x y =
         let v = op x y in
         if v then 1 else 0
@@ -52,15 +55,15 @@ module Expr =
         | "*"  -> ( * )
         | "/"  -> ( / )
         | "%"  -> ( mod )
-        | "<"  -> make_bool_result_int ( < )
+        | "<"  -> make_bool_result_int ( <  )
         | "<=" -> make_bool_result_int ( <= )
-        | ">"  -> make_bool_result_int ( > )
+        | ">"  -> make_bool_result_int ( >  )
         | ">=" -> make_bool_result_int ( >= )
         | "==" -> make_bool_result_int ( == )
         | "!=" -> make_bool_result_int ( <> )
         | "&&" -> make_bool_result_int @@ make_bool_inputs_int ( && )
         | "!!" -> make_bool_result_int @@ make_bool_inputs_int ( || )
-        | _ -> failwith (Printf.sprintf "Unknown operator %s" op)
+        | _    -> failwith (Printf.sprintf "Unknown operator %s" op)
         
     (* Expression evaluator
 
@@ -83,7 +86,28 @@ module Expr =
    
     *)
     ostap (
-      parse: empty {failwith "Not implemented yet"}
+      primary: x:IDENT {Var x} | n:DECIMAL {Const n} | -"(" expr -")";
+      expr:
+        !(Util.expr
+           (fun x -> x)
+           [|
+             `Lefta, [(ostap ("!!"), fun x y -> Binop ("!!", x, y))];
+             `Lefta, [(ostap ("&&"), fun x y -> Binop ("&&", x, y))];
+             `Nona , [(ostap ("=="), fun x y -> Binop ("==", x, y));
+                      (ostap ("!="), fun x y -> Binop ("!=", x, y));
+                      (ostap ("<="), fun x y -> Binop ("<=", x, y));
+                      (ostap ("<") , fun x y -> Binop ("<" , x, y));
+                      (ostap (">="), fun x y -> Binop (">=", x, y));
+                      (ostap (">") , fun x y -> Binop (">" , x, y))];
+             `Lefta, [(ostap ("+") , fun x y -> Binop ("+" , x, y));
+                      (ostap ("-") , fun x y -> Binop ("-" , x, y))];
+             `Lefta, [(ostap ("*") , fun x y -> Binop ("*" , x, y));
+                      (ostap ("/") , fun x y -> Binop ("/" , x, y));
+                      (ostap ("%") , fun x y -> Binop ("%" , x, y))];
+           |]
+           primary
+         );
+      parse: expr
     )
 
   end
@@ -120,7 +144,12 @@ module Stmt =
                                                          
     (* Statement parser *)
     ostap (
-      parse: empty {failwith "Not implemented yet"}
+      one_stmt:
+        x:IDENT ":=" e:!(Expr.expr)    { Assign (x, e) }
+      | "read" "(" x:IDENT ")"         { Read x }
+      | "write" "(" e:!(Expr.expr) ")" { Write e };
+      stmts: <s::ss> : !(Util.listBy)[ostap (";")][one_stmt] { List.fold_left (fun a b -> Seq (a, b)) s ss };
+      parse: stmts
     )
       
   end
