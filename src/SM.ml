@@ -23,8 +23,29 @@ type config = int list * Stmt.config
      val eval : config -> prg -> config
 
    Takes a configuration and a program, and returns a configuration as a result
-*)                         
-let rec eval conf prog = failwith "Not yet implemented"
+*)                                               
+let rec eval config prg = 
+    match prg with
+    | [] -> config
+    | (f :: rest) -> 
+        match f with
+        | BINOP op -> 
+            let y :: x :: st, c = config in
+            eval (((Expr.get_op op) x y) :: st, c) rest
+        | CONST i ->
+            let st, c = config in eval (i :: st, c) rest
+        | READ ->
+            let (st, (s, z :: i, o)) = config in
+            eval (z :: st, (s, i, o)) rest
+        | WRITE ->
+            let (z :: st, (s, i, o)) = config in
+            eval (st, (s, i, o @ [z])) rest
+        | LD x ->
+            let (st, (s, i, o)) = config in
+            eval ((s x) :: st, (s, i, o)) rest
+        | ST x ->
+            let (z :: st, (s, i, o)) = config in
+            eval (st, (Expr.update x z s, i, o)) rest
 
 (* Top-level evaluation
 
