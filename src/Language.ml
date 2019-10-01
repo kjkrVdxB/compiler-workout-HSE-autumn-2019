@@ -85,25 +85,26 @@ module Expr =
          DECIMAL --- a decimal constant [0-9]+ as a string
    
     *)
+    let ostap_binop op = ostap ($(op)), fun x y -> Binop (op, x, y)
     ostap (
       primary: x:IDENT {Var x} | n:DECIMAL {Const n} | -"(" expr -")";
       expr:
         !(Util.expr
            (fun x -> x)
            [|
-             `Lefta, [(ostap ("!!"), fun x y -> Binop ("!!", x, y))];
-             `Lefta, [(ostap ("&&"), fun x y -> Binop ("&&", x, y))];
-             `Nona , [(ostap ("=="), fun x y -> Binop ("==", x, y));
-                      (ostap ("!="), fun x y -> Binop ("!=", x, y));
-                      (ostap ("<="), fun x y -> Binop ("<=", x, y));
-                      (ostap ("<") , fun x y -> Binop ("<" , x, y));
-                      (ostap (">="), fun x y -> Binop (">=", x, y));
-                      (ostap (">") , fun x y -> Binop (">" , x, y))];
-             `Lefta, [(ostap ("+") , fun x y -> Binop ("+" , x, y));
-                      (ostap ("-") , fun x y -> Binop ("-" , x, y))];
-             `Lefta, [(ostap ("*") , fun x y -> Binop ("*" , x, y));
-                      (ostap ("/") , fun x y -> Binop ("/" , x, y));
-                      (ostap ("%") , fun x y -> Binop ("%" , x, y))];
+             `Lefta, [ostap_binop "!!"];
+             `Lefta, [ostap_binop "&&"];
+             `Nona , [ostap_binop "==";
+                      ostap_binop "!=";
+                      ostap_binop "<=";
+                      ostap_binop "<" ;
+                      ostap_binop ">=";
+                      ostap_binop ">" ];
+             `Lefta, [ostap_binop "+" ;
+                      ostap_binop "-" ];
+             `Lefta, [ostap_binop "*" ;
+                      ostap_binop "/" ;
+                      ostap_binop "%" ];
            |]
            primary
          );
