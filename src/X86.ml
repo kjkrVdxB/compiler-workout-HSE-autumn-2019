@@ -79,6 +79,14 @@ let show instr =
 (* Opening stack machine to use instructions without fully qualified names *)
 open SM
 
+let suf_for = function
+  | "==" -> "e"
+  | "!=" -> "ne"
+  | "<=" -> "le"
+  | "<"  -> "l"
+  | ">=" -> "ge"
+  | ">"  -> "g"
+
 (* Symbolic stack machine evaluator
 
      compile : env -> prg -> env * instr list
@@ -86,7 +94,119 @@ open SM
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
    of x86 instructions
 *)
-let compile env code = failwith "Not yet implemented"
+(* TODO: protect %eax and %edx *)
+let rec compile env prg = match prg with
+  | [] -> env, []
+  | op::rest ->
+    let env, c = match op with
+    | CONST n ->
+      let x, env = env#allocate in
+      env, [Mov (L n, x)]
+    | READ ->
+      let res, env = env#allocate in
+      env,
+      [
+        Push ebp;
+        Mov  (esp, ebp);
+        Call "Lread";
+        Mov  (ebp, esp);
+        Pop ebp;
+        Mov  (eax, res);
+      ]
+    | WRITE ->
+      let x, env = env#pop in
+      env,
+      [
+        Push ebp;
+        Mov  (esp, ebp);
+        Push x;
+        Call "Lwrite";
+        Mov  (ebp, esp);
+        Pop ebp;
+      ]
+    | LD x ->
+      let env = env#global x in
+      let v, env = env#allocate in
+      env,
+      [
+        Mov (M (env#loc x), eax);
+        Mov (eax, v);
+      ]
+    | ST x ->
+      let env = env#global x in
+      let v, env = env#pop in
+      env,
+      [
+        Mov (v, eax);
+        Mov (eax, M (env#loc x));
+      ]
+    | BINOP op ->
+      let simple_op env op =
+        let y, x, env = env#pop2 in
+        let res, env = env#allocate in
+        env,
+        [
+          Mov  (x, eax);
+          Binop (op, y, eax);
+          Mov  (eax, res);
+        ]
+      in
+      let cmp env suf =
+        let y, x, env = env#pop2 in
+        let res, env = env#allocate in
+        env,
+        [
+          Mov (x, eax);
+          Binop ("cmp", y, eax);
+          Mov (L 0, eax);
+          Set (suf, "%al");
+          Mov (eax, res);
+        ]
+      in
+      let cast_to_bool opnd res =
+        [
+          Mov (opnd, eax);
+          Binop ("^", L 0, eax);
+          Mov (L 0, eax);
+          Set ("nz", "%al");
+          Mov (eax, res);
+        ]
+      in
+      let with_cast_to_bool env op =
+        let y, x, env = env#pop2 in
+        let resx, env = env#allocate in (* order of allocation matters *)
+        let resy, env = env#allocate in
+        let env, clrest = simple_op env op in
+        env,
+        cast_to_bool y resy @ cast_to_bool x resx @ clrest
+      in
+      match op with
+      | "+" | "-" | "*" -> simple_op env op
+      | "&&" | "!!" -> with_cast_to_bool env op
+      | "/"  ->
+        let y, x, env = env#pop2 in
+        let res, env = env#allocate in
+        env,
+        [
+          Mov  (x, eax);
+          Cltd;
+          IDiv y;
+          Mov  (eax, res);
+        ]
+      | "%" ->
+        let y, x, env = env#pop2 in
+        let res, env = env#allocate in
+        env,
+        [
+          Mov  (x, eax);
+          Cltd;
+          IDiv y;
+          Mov  (edx, res);
+        ]
+      | "==" | "!=" | "<=" | "<" | ">=" | ">"  -> cmp env (suf_for op)
+      in
+      let env, crest = compile env rest in
+      env, c @ crest
 
 (* A set of strings *)           
 module S = Set.Make (String)
@@ -99,10 +219,10 @@ class env =
     val stack       = []       (* symbolic stack                    *)
 
     (* gets a name for a global variable *)
-    method loc x = "global_" ^ x                                 
+    method loc x = "global_" ^ x
 
     (* allocates a fresh position on a symbolic stack *)
-    method allocate =    
+    method allocate =
       let x, n =
         let rec allocate' = function
         | []                                -> R 0     , 0

@@ -27,8 +27,30 @@ type config = int list * Stmt.config
 
    Takes an environment, a configuration and a program, and returns a configuration as a result. The
    environment is used to locate a label to jump to (via method env#labeled <label_name>)
-*)                         
-let rec eval env conf prog = failwith "Not yet implemented"
+*)                                         
+(* TODO: use the environment *)
+let rec eval env config prg = 
+    match prg with
+    | [] -> config
+    | (f :: rest) -> 
+        match f with
+        | BINOP op -> 
+            let y :: x :: st, c = config in
+            eval (((Expr.get_op op) x y) :: st, c) rest
+        | CONST i ->
+            let st, c = config in eval (i :: st, c) rest
+        | READ ->
+            let (st, (s, z :: i, o)) = config in
+            eval (z :: st, (s, i, o)) rest
+        | WRITE ->
+            let (z :: st, (s, i, o)) = config in
+            eval (st, (s, i, o @ [z])) rest
+        | LD x ->
+            let (st, (s, i, o)) = config in
+            eval ((s x) :: st, (s, i, o)) rest
+        | ST x ->
+            let (z :: st, (s, i, o)) = config in
+            eval (st, (Expr.update x z s, i, o)) rest
 
 (* Top-level evaluation
 
@@ -53,4 +75,9 @@ let run p i =
    Takes a program in the source language and returns an equivalent program for the
    stack machine
 *)
-let compile p = failwith "Not yet implemented"
+let rec compile stmt =
+    match stmt with
+    | Syntax.Stmt.Read x -> [READ; ST x]
+    | Syntax.Stmt.Write ex -> (compile_ex ex) @ [WRITE]
+    | Syntax.Stmt.Assign (x, ex) -> (compile_ex ex) @ [ST x]
+    | Syntax.Stmt.Seq (s1, s2) -> (compile s1) @ (compile s2)
