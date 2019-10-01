@@ -3,8 +3,8 @@
 (* The registers: *)
 let regs = [|"%ebx"; "%ecx"; "%esi"; "%edi"; "%eax"; "%edx"; "%ebp"; "%esp"|]
 
-(* We can not freely operate with all register; only 3 by now *)                    
-let num_of_regs = Array.length regs - 5
+(* We can not freely operate with all register; only 4 by now *)                    
+let num_of_regs = Array.length regs - 4
 
 (* We need to know the word size to calculate offsets correctly *)
 let word_size = 4
@@ -105,11 +105,11 @@ class env =
     method allocate =    
       let x, n =
         let rec allocate' = function
-        | []                            -> R 0     , 0
-        | (S n)::_                      -> S (n+1) , n+2
-        | (R n)::_ when n < num_of_regs -> R (n+1) , 0
-        | (M _)::s                      -> allocate' s
-        | _                             -> S 0     , 1
+        | []                                -> R 0     , 0
+        | (S n)::_                          -> S (n+1) , n+2
+        | (R n)::_ when n + 1 < num_of_regs -> R (n+1) , 0
+        | (M _)::s                          -> allocate' s
+        | _                                 -> S 0     , 1
         in
         allocate' stack
       in
