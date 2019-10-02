@@ -126,34 +126,53 @@ module Stmt =
     (* empty statement                  *) | Skip
     (* conditional                      *) | If     of Expr.t * t * t
     (* loop with a pre-condition        *) | While  of Expr.t * t
-    (* loop with a post-condition       *) (* add yourself *)  with show
+    (* loop with a post-condition       *) | Repeat of t * Expr.t  with show
                                                                     
     (* The type of configuration: a state, an input stream, an output stream *)
     type config = Expr.state * int list * int list 
 
     (* Statement evaluator
 
-
           val eval : config -> t -> config
 
        Takes a configuration and a statement, and returns another configuration
     *)
-    let rec eval config stmt = 
-        match stmt with
-        | Read name -> 
-            let s, z :: i, o = config in (Expr.update name z s, i, o)
+    let rec eval config stmt = match stmt with
+        | Read name ->
+          let s, z :: i, o = config in (Expr.update name z s, i, o)
         | Write ex ->
-            let s, i, o = config in (s, i, o @ [Expr.eval s ex])
+          let s, i, o = config in (s, i, o @ [Expr.eval s ex])
         | Assign (name, ex) ->
-            let s, i, o = config in (Expr.update name (Expr.eval s ex) s, i, o)
+          let s, i, o = config in (Expr.update name (Expr.eval s ex) s, i, o)
         | Seq (a, b) -> eval (eval config a) b
-                                                         
+        | Skip -> config
+        | If (c, t, f) ->
+          let s, _, _ = config in
+          if (Expr.eval s c) != 0 then eval config t else eval config f
+        | While (c, b) ->
+          let s, _, _ = config in
+          if (Expr.eval s c) != 0 then eval (eval config b) stmt else config
+        | Repeat (b, c) ->
+          let config = eval config b in
+          let s, _, _ = config in
+          if (Expr.eval s c) = 0 then eval config stmt else config
+
     (* Statement parser *)
     ostap (
+      ifcont: c:!(Expr.expr) "then" b:stmts rest:elif { If (c, b, rest) };
+      elif: 
+        -"elif" ifcont
+      | -"else" stmts -"fi"
+      | "fi" { Skip };
       one_stmt:
         x:IDENT ":=" e:!(Expr.expr)    { Assign (x, e) }
       | "read" "(" x:IDENT ")"         { Read x }
-      | "write" "(" e:!(Expr.expr) ")" { Write e };
+      | "write" "(" e:!(Expr.expr) ")" { Write e }
+      | -"if" ifcont
+      | "while" c:!(Expr.expr) "do" b:stmts "od" { While (c, b) }
+      | "skip" { Skip }
+      | "for" init:stmts "," c:!(Expr.expr) "," post:stmts "do" b:stmts "od" { Seq (init, While (c, Seq (b, post))) }
+      | "repeat" b:stmts "until" c:!(Expr.expr) { Repeat (b, c) };
       stmts: <s::ss> : !(Util.listBy)[ostap (";")][one_stmt] { List.fold_left (fun a b -> Seq (a, b)) s ss };
       parse: stmts
     )

@@ -28,7 +28,6 @@ type config = int list * Stmt.config
    Takes an environment, a configuration and a program, and returns a configuration as a result. The
    environment is used to locate a label to jump to (via method env#labeled <label_name>)
 *)                                         
-(* TODO: use the environment *)
 let rec eval env config prg = 
     match prg with
     | [] -> config
@@ -36,21 +35,30 @@ let rec eval env config prg =
         match f with
         | BINOP op -> 
             let y :: x :: st, c = config in
-            eval (((Expr.get_op op) x y) :: st, c) rest
+            eval env (((Expr.get_op op) x y) :: st, c) rest
         | CONST i ->
-            let st, c = config in eval (i :: st, c) rest
+            let st, c = config in
+            eval env (i :: st, c) rest
         | READ ->
             let (st, (s, z :: i, o)) = config in
-            eval (z :: st, (s, i, o)) rest
+            eval env (z :: st, (s, i, o)) rest
         | WRITE ->
             let (z :: st, (s, i, o)) = config in
-            eval (st, (s, i, o @ [z])) rest
+            eval env (st, (s, i, o @ [z])) rest
         | LD x ->
             let (st, (s, i, o)) = config in
-            eval ((s x) :: st, (s, i, o)) rest
+            eval env ((s x) :: st, (s, i, o)) rest
         | ST x ->
             let (z :: st, (s, i, o)) = config in
-            eval (st, (Expr.update x z s, i, o)) rest
+            eval env (st, (Expr.update x z s, i, o)) rest
+        | LABEL l -> eval env config rest
+        | JMP l -> eval env config (env#labeled l)
+        | CJMP (t, l) ->
+            let (z :: st, c) = config in
+            let config = (st, c) in
+            if ((t = "z") = (z = 0))
+            then eval env config (env#labeled l)
+            else eval env config rest
 
 (* Top-level evaluation
 
@@ -67,6 +75,12 @@ let run p i =
   in
   let m = make_map M.empty p in
   let (_, (_, _, o)) = eval (object method labeled l = M.find l m end) ([], (Expr.empty, i, [])) p in o
+  
+let make_label_gen () =
+  let cnt = Base.ref 0 in
+  fun () ->
+    incr cnt;
+    "label" ^ (string_of_int !cnt)
 
 (* Stack machine compiler
 
@@ -75,9 +89,36 @@ let run p i =
    Takes a program in the source language and returns an equivalent program for the
    stack machine
 *)
-let rec compile stmt =
-    match stmt with
-    | Syntax.Stmt.Read x -> [READ; ST x]
-    | Syntax.Stmt.Write ex -> (compile_ex ex) @ [WRITE]
-    | Syntax.Stmt.Assign (x, ex) -> (compile_ex ex) @ [ST x]
-    | Syntax.Stmt.Seq (s1, s2) -> (compile s1) @ (compile s2)
+let compile =
+  let rec expr = function
+  | Expr.Var   x          -> [LD x]
+  | Expr.Const n          -> [CONST n]
+  | Expr.Binop (op, x, y) -> expr x @ expr y @ [BINOP op]
+  in
+  let label_gen = make_label_gen () in
+  let rec compile' outlabel =
+    function
+    | Stmt.Seq (s1, s2)  -> compile' "" s1 @ compile' outlabel s2
+    | Stmt.Read x        -> [READ; ST x]
+    | Stmt.Write e       -> expr e @ [WRITE]
+    | Stmt.Assign (x, e) -> expr e @ [ST x]
+    | Stmt.Skip          -> []
+    | Stmt.If (c, t, f)  ->
+      let els = label_gen () in
+      let out = if outlabel = "" then label_gen () else outlabel in
+      expr c @ 
+      [CJMP ("z", els)] @ 
+        compile' out t @ [JMP out] @ 
+      [LABEL els] @
+        compile' out f @
+      (if outlabel = "" then [LABEL out] else [])
+    | Stmt.While (c, b)  ->
+      let start = label_gen () in
+      let test = label_gen () in
+      [JMP test] @ [LABEL start] @ compile' "" b @ [LABEL test] @ expr c @ [CJMP ("nz", start)]
+    | Stmt.Repeat (b, c) ->
+      let start = label_gen () in
+      [LABEL start] @ compile' "" b @ expr c @ [CJMP ("z", start)]
+  in
+  compile' ""
+    

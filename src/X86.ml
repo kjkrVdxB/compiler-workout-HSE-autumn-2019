@@ -86,6 +86,45 @@ let suf_for = function
   | "<"  -> "l"
   | ">=" -> "ge"
   | ">"  -> "g"
+  
+let simple_op env op =
+  let y, x, env = env#pop2 in
+  let res, env = env#allocate in
+  env,
+  [
+      Mov  (x, eax);
+      Binop (op, y, eax);
+      Mov  (eax, res);
+  ]
+
+let cmp env op =
+  let y, x, env = env#pop2 in
+  let res, env = env#allocate in
+  env,
+  [
+    Mov (x, eax);
+    Binop ("cmp", y, eax);
+    Mov (L 0, eax);
+    Set (suf_for op, "%al");
+    Mov (eax, res);
+  ]
+  
+let cast_to_bool opnd res =
+  [
+    Mov (opnd, eax);
+    Binop ("^", L 0, eax);
+    Mov (L 0, eax);
+    Set ("nz", "%al");
+    Mov (eax, res);
+  ]
+  
+let with_cast_to_bool env op =
+  let y, x, env = env#pop2 in
+  let _, env = env#allocate in
+  let _, env = env#allocate in
+  let env, clrest = simple_op env op in
+  env,
+  cast_to_bool y y @ cast_to_bool x x @ clrest
 
 (* Symbolic stack machine evaluator
 
@@ -140,46 +179,17 @@ let rec compile env prg = match prg with
         Mov (v, eax);
         Mov (eax, M (env#loc x));
       ]
+    | LABEL l -> env, [Label l]
+    | JMP l -> env, [Jmp l]
+    | CJMP (c, l) -> 
+      let x, env = env#pop in
+      env, 
+      [
+        Mov (x, eax);
+        Binop ("^", L 0, eax);
+        CJmp (c, l);
+      ]
     | BINOP op ->
-      let simple_op env op =
-        let y, x, env = env#pop2 in
-        let res, env = env#allocate in
-        env,
-        [
-          Mov  (x, eax);
-          Binop (op, y, eax);
-          Mov  (eax, res);
-        ]
-      in
-      let cmp env suf =
-        let y, x, env = env#pop2 in
-        let res, env = env#allocate in
-        env,
-        [
-          Mov (x, eax);
-          Binop ("cmp", y, eax);
-          Mov (L 0, eax);
-          Set (suf, "%al");
-          Mov (eax, res);
-        ]
-      in
-      let cast_to_bool opnd res =
-        [
-          Mov (opnd, eax);
-          Binop ("^", L 0, eax);
-          Mov (L 0, eax);
-          Set ("nz", "%al");
-          Mov (eax, res);
-        ]
-      in
-      let with_cast_to_bool env op =
-        let y, x, env = env#pop2 in
-        let resx, env = env#allocate in (* order of allocation matters *)
-        let resy, env = env#allocate in
-        let env, clrest = simple_op env op in
-        env,
-        cast_to_bool y resy @ cast_to_bool x resx @ clrest
-      in
       match op with
       | "+" | "-" | "*" -> simple_op env op
       | "&&" | "!!" -> with_cast_to_bool env op
@@ -203,10 +213,10 @@ let rec compile env prg = match prg with
           IDiv y;
           Mov  (edx, res);
         ]
-      | "==" | "!=" | "<=" | "<" | ">=" | ">"  -> cmp env (suf_for op)
-      in
-      let env, crest = compile env rest in
-      env, c @ crest
+      | "==" | "!=" | "<=" | "<" | ">=" | ">"  -> cmp env op
+    in
+    let env, crest = compile env rest in
+    env, c @ crest
 
 (* A set of strings *)           
 module S = Set.Make (String)
