@@ -108,23 +108,24 @@ let cmp env op =
     Set (suf_for op, "%al");
     Mov (eax, res);
   ]
-  
-let cast_to_bool opnd res =
+
+(* NOTE: calling this on Ms is bad *)
+let cast_to_bool opnd =
   [
     Mov (opnd, eax);
     Binop ("^", L 0, eax);
     Mov (L 0, eax);
     Set ("nz", "%al");
-    Mov (eax, res);
+    Mov (eax, opnd);
   ]
-  
+
 let with_cast_to_bool env op =
   let y, x, env = env#pop2 in
-  let _, env = env#allocate in
-  let _, env = env#allocate in
+  let env = env#push x in
+  let env = env#push y in
   let env, clrest = simple_op env op in
   env,
-  cast_to_bool y y @ cast_to_bool x x @ clrest
+  cast_to_bool y @ cast_to_bool x @ clrest
 
 (* Symbolic stack machine evaluator
 
@@ -170,7 +171,7 @@ let rec compile env prg = match prg with
       [
         Mov (M (env#loc x), eax);
         Mov (eax, v);
-      ]
+      ] (* NOTE: just pushing (M (env#loc x)) to symbolic stack is a bad idea *)
     | ST x ->
       let env = env#global x in
       let v, env = env#pop in
@@ -235,11 +236,11 @@ class env =
     method allocate =
       let x, n =
         let rec allocate' = function
-        | []                                -> R 0     , 0
-        | (S n)::_                          -> S (n+1) , n+2
-        | (R n)::_ when n + 1 < num_of_regs -> R (n+1) , 0
-        | (M _)::s                          -> allocate' s
-        | _                                 -> S 0     , 1
+        | []                              -> R 0     , 0
+        | (S n)::_                        -> S (n+1) , n+2
+        | (R n)::_ when n+1 < num_of_regs -> R (n+1) , 0
+        | (M _)::s                        -> allocate' s
+        | _                               -> S 0     , 1
         in
         allocate' stack
       in
@@ -255,7 +256,7 @@ class env =
     method pop2 = let x::y::stack' = stack in x, y, {< stack = stack' >}
 
     (* registers a global variable in the environment *)
-    method global x  = {< globals = S.add ("global_" ^ x) globals >}
+    method global x  = {< globals = S.add (self#loc x) globals >}
 
     (* gets the number of allocated stack slots *)
     method allocated = stack_slots
