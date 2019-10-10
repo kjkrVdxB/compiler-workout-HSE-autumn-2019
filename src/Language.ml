@@ -4,6 +4,7 @@
 open GT
 
 (* Opening a library for combinator-based syntax analysis *)
+open Ostap
 open Ostap.Combinators
 
 (* States *)
@@ -33,6 +34,10 @@ module State =
 
     (* Drops a scope *)
     let drop_scope st st' = {st' with g = st.g}
+
+    let rec update_many xs vs s = match xs with
+      | [] -> s
+      | x::xs -> update_many xs (List.tl vs) (update x (List.hd vs) s)
 
   end
     
@@ -150,11 +155,54 @@ module Stmt =
 
        which returns a list of formal parameters and a body for given definition
     *)
-    let rec eval _ = failwith "Not Implemented Yet"
+    let rec eval env config stmt = match stmt with
+        | Read name ->
+          let s, z :: i, o = config in (State.update name z s, i, o)
+        | Write ex ->
+          let s, i, o = config in (s, i, o @ [Expr.eval s ex])
+        | Assign (name, ex) ->
+          let s, i, o = config in (State.update name (Expr.eval s ex) s, i, o)
+        | Seq (a, b) -> eval env (eval env config a) b
+        | Skip -> config
+        | If (c, t, f) ->
+          let s, _, _ = config in
+          if (Expr.eval s c) <> 0 then eval env config t else eval env config f
+        | While (c, b) ->
+          let s, _, _ = config in
+          if (Expr.eval s c) <> 0 then eval env (eval env config b) stmt else config
+        | Repeat (b, c) ->
+          let config = eval env config b in
+          let s, _, _ = config in
+          if (Expr.eval s c) = 0 then eval env config stmt else config
+        | Call (name, args) ->
+          let params, locals, body = env#definition name in
+          let s, i, o = config in
+          let argvals  = List.map (Expr.eval s) args in
+          let s' = State.push_scope s (params @ locals) in
+          let s' = State.update_many params argvals s' in
+          let s', i, o = (eval env (s', i, o) body) in
+          (State.drop_scope s' s, i, o)
+
                                 
     (* Statement parser *)
     ostap (                                      
-      parse: empty {failwith "Not yet implemented"}
+      ifcont: c:!(Expr.parse) "then" b:stmts rest:elif { If (c, b, rest) };
+      elif:
+        -"elif" ifcont
+      | -"else" stmts -"fi"
+      | "fi" { Skip };
+      one_stmt:
+        x:IDENT ":=" e:!(Expr.parse)    { Assign (x, e) }
+      | "read" "(" x:IDENT ")"         { Read x }
+      | "write" "(" e:!(Expr.parse) ")" { Write e }
+      | -"if" ifcont
+      | "while" c:!(Expr.parse) "do" b:stmts "od" { While (c, b) }
+      | "skip" { Skip }
+      | "for" init:stmts "," c:!(Expr.parse) "," post:stmts "do" b:stmts "od" { Seq (init, While (c, Seq (b, post))) }
+      | "repeat" b:stmts "until" c:!(Expr.parse) { Repeat (b, c) }
+      | fun_name:IDENT "(" args:!(Util.list0By)[ostap (",")][Expr.parse] ")" { Call (fun_name, args) };
+      stmts: <s::ss> : !(Util.listBy)[ostap (";")][one_stmt] { List.fold_left (fun a b -> Seq (a, b)) s ss };
+      parse: stmts
     )
       
   end
@@ -166,8 +214,9 @@ module Definition =
     (* The type for a definition: name, argument list, local variables, body *)
     type t = string * (string list * string list * Stmt.t)
 
-    ostap (                                      
-      parse: empty {failwith "Not yet implemented"}
+    ostap (
+      locals: -"local" !(Util.listBy)[ostap (",")][ostap(IDENT)] | empty {[]};
+      parse:  "fun" name:IDENT "(" params:!(Util.list0By)[ostap (",")][ostap(IDENT)] ")" l:locals "{" body:!(Stmt.parse) "}" { name, (params, l, body) }
     )
 
   end

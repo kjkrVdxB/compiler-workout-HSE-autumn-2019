@@ -24,6 +24,12 @@ type prg = insn list
  *)
 type config = (prg * State.t) list * int list * Stmt.config
 
+let rec split_at n l =
+  if n = 0 then [], l else
+  match l with
+  | [] -> [], []
+  | x::xs -> let h, t = split_at (n - 1) xs in x::h, t
+
 (* Stack machine interpreter
 
      val eval : env -> config -> prg -> config
@@ -31,7 +37,53 @@ type config = (prg * State.t) list * int list * Stmt.config
    Takes an environment, a configuration and a program, and returns a configuration as a result. The
    environment is used to locate a label to jump to (via method env#labeled <label_name>)
 *)                         
-let rec eval _ = failwith "Not Implemented Yet"
+let rec eval env config prg =
+    match prg with
+    | [] -> config
+    | (f :: rest) ->
+        match f with
+        | BINOP op ->
+            let cs, y :: x :: st, c = config in
+            eval env (cs, ((Expr.to_func op) x y) :: st, c) rest
+        | CONST i ->
+            let cs, st, c = config in
+            eval env (cs, i :: st, c) rest
+        | READ ->
+            let cs, st, (s, z :: i, o) = config in
+            eval env (cs, z :: st, (s, i, o)) rest
+        | WRITE ->
+            let cs, z :: st, (s, i, o) = config in
+            eval env (cs, st, (s, i, o @ [z])) rest
+        | LD x ->
+            let cs, st, (s, i, o) = config in
+            eval env (cs, (State.eval s x) :: st, (s, i, o)) rest
+        | ST x ->
+            let cs, z :: st, (s, i, o) = config in
+            eval env (cs, st, (State.update x z s, i, o)) rest
+        | LABEL l -> eval env config rest
+        | JMP l -> eval env config (env#labeled l)
+        | CJMP (t, l) ->
+            let cs, z :: st, c = config in
+            let config = (cs, st, c) in
+            if ((t = "z") = (z = 0))
+            then eval env config (env#labeled l)
+            else eval env config rest
+        | BEGIN (params, locals) ->
+            let cs, st, (s, i, o) = config in
+            let h, t = split_at (List.length params) st in
+            let s' = State.push_scope s (params @ locals) in
+            let s' = State.update_many params h s' in
+            eval env (cs, t, (s', i, o)) rest
+        | CALL name ->
+            let cs, st, (s, i, o) = config in
+            eval env ((rest, s)::cs, st, (s, i, o)) (env#labeled name)
+        | END ->
+            let cs, st, (s, i, o) = config in
+            match cs with
+            | [] -> config
+            | _  ->
+                let (p', s')::cs, st, (s, i, o) = config in
+                eval env (cs, st, (State.drop_scope s s', i, o)) p'
 
 (* Top-level evaluation
 
@@ -49,6 +101,13 @@ let run p i =
   let m = make_map M.empty p in
   let (_, _, (_, _, o)) = eval (object method labeled l = M.find l m end) ([], [], (State.empty, i, [])) p in o
 
+
+let make_label_gen () =
+  let cnt = Base.ref 0 in
+  fun () ->
+    incr cnt;
+    "label" ^ (string_of_int !cnt)
+
 (* Stack machine compiler
 
      val compile : Language.t -> prg
@@ -56,4 +115,49 @@ let run p i =
    Takes a program in the source language and returns an equivalent program for the
    stack machine
 *)
-let compile _ = failwith "Not Implemented Yet"
+let compile dt =
+  let ds, t = dt in
+  let rec expr = function
+  | Expr.Var   x          -> [LD x]
+  | Expr.Const n          -> [CONST n]
+  | Expr.Binop (op, x, y) -> expr x @ expr y @ [BINOP op]
+  in
+  let label_gen = make_label_gen () in
+  let rec condcompile t =
+    let label = label_gen () in
+    let need, p = compile' label t in
+    p @ (if need then [LABEL label] else [])
+  and compile' outlabel t = match t with
+    | Stmt.Seq (s1, s2)  ->
+      let need, p = compile' outlabel s2 in
+      need, condcompile s1 @ p
+    | Stmt.Read x        -> false, [READ; ST x]
+    | Stmt.Write e       -> false, expr e @ [WRITE]
+    | Stmt.Assign (x, e) -> false, expr e @ [ST x]
+    | Stmt.Skip          -> false, []
+    | Stmt.If (c, t, f)  ->
+      let els = label_gen () in
+      let _, tp = compile' outlabel t in
+      let _, fp = compile' outlabel f in
+      true,
+      expr c @
+      [CJMP ("z", els)] @
+        tp @ [JMP outlabel] @
+      [LABEL els] @
+        fp
+    | Stmt.While (c, b)  ->
+      let start = label_gen () in
+      let test = label_gen () in
+      let _, bp = compile' test b in
+      false, [JMP test] @ [LABEL start] @ bp @ [LABEL test] @ expr c @ [CJMP ("nz", start)]
+    | Stmt.Repeat (b, c) ->
+      let start = label_gen () in
+      false, [LABEL start] @ condcompile b @ expr c @ [CJMP ("z", start)]
+    | Stmt.Call (name, args) -> false, List.flatten (List.map expr (List.rev args)) @ [CALL name]
+  in
+  let compile_def d =
+    let name, (params, locals, body) = d in
+    [LABEL name; BEGIN (params, locals)] @ condcompile body @ [END]
+  in
+  condcompile t @ [END] @
+  List.flatten (List.map compile_def ds)
