@@ -89,36 +89,42 @@ let make_label_gen () =
    Takes a program in the source language and returns an equivalent program for the
    stack machine
 *)
-let compile =
+let compile t =
   let rec expr = function
   | Expr.Var   x          -> [LD x]
   | Expr.Const n          -> [CONST n]
   | Expr.Binop (op, x, y) -> expr x @ expr y @ [BINOP op]
   in
   let label_gen = make_label_gen () in
-  let rec compile' outlabel =
-    function
-    | Stmt.Seq (s1, s2)  -> compile' "" s1 @ compile' outlabel s2
-    | Stmt.Read x        -> [READ; ST x]
-    | Stmt.Write e       -> expr e @ [WRITE]
-    | Stmt.Assign (x, e) -> expr e @ [ST x]
-    | Stmt.Skip          -> []
+  let rec condcompile t =
+    let label = label_gen () in
+    let need, p = compile' label t in
+    p @ (if need then [LABEL label] else [])
+  and compile' outlabel t = match t with
+    | Stmt.Seq (s1, s2)  ->
+      let need, p = compile' outlabel s2 in
+      need, condcompile s1 @ p
+    | Stmt.Read x        -> false, [READ; ST x]
+    | Stmt.Write e       -> false, expr e @ [WRITE]
+    | Stmt.Assign (x, e) -> false, expr e @ [ST x]
+    | Stmt.Skip          -> false, []
     | Stmt.If (c, t, f)  ->
       let els = label_gen () in
-      let out = if outlabel = "" then label_gen () else outlabel in
+      let _, tp = compile' outlabel t in
+      let _, fp = compile' outlabel f in
+      true,
       expr c @ 
       [CJMP ("z", els)] @ 
-        compile' out t @ [JMP out] @ 
+        tp @ [JMP outlabel] @
       [LABEL els] @
-        compile' out f @
-      (if outlabel = "" then [LABEL out] else [])
+        fp
     | Stmt.While (c, b)  ->
       let start = label_gen () in
       let test = label_gen () in
-      [JMP test] @ [LABEL start] @ compile' "" b @ [LABEL test] @ expr c @ [CJMP ("nz", start)]
+      let _, bp = compile' test b in
+      false, [JMP test] @ [LABEL start] @ bp @ [LABEL test] @ expr c @ [CJMP ("nz", start)]
     | Stmt.Repeat (b, c) ->
       let start = label_gen () in
-      [LABEL start] @ compile' "" b @ expr c @ [CJMP ("z", start)]
+      false, [LABEL start] @ condcompile b @ expr c @ [CJMP ("z", start)]
   in
-  compile' ""
-    
+  condcompile t
