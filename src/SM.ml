@@ -119,7 +119,7 @@ let compile dt =
   | Expr.Var   x          -> [LD x]
   | Expr.Const n          -> [CONST n]
   | Expr.Binop (op, x, y) -> expr x @ expr y @ [BINOP op]
-  | Expr.Call (name, args) -> List.flatten (List.map expr (List.rev args)) @ [CALL (name, List.length args, true)]
+  | Expr.Call (name, args) -> List.flatten (List.map expr (List.rev args)) @ [CALL (name, List.length args, false)]
   in
   let label_gen = make_label_gen () in
   let rec condcompile t =
@@ -152,7 +152,7 @@ let compile dt =
     | Stmt.Repeat (b, c) ->
       let start = label_gen () in
       false, [LABEL start] @ condcompile b @ expr c @ [CJMP ("z", start)]
-    | Stmt.Call (name, args) -> false, List.flatten (List.map expr (List.rev args)) @ [CALL (name, List.length args, false)]
+    | Stmt.Call (name, args) -> false, List.flatten (List.map expr (List.rev args)) @ [CALL (name, List.length args, true)]
     | Stmt.Return me -> (match me with
                          | None -> false, [RET false]
                          | Some e -> false, expr e @ [RET true])

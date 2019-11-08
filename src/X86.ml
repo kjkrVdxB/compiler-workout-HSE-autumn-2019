@@ -75,13 +75,61 @@ let show instr =
   | Pop    s           -> Printf.sprintf "\tpopl\t%s"      (opnd s)
   | Ret                -> "\tret"
   | Call   p           -> Printf.sprintf "\tcall\t%s" p
-  | Label  l           -> Printf.sprintf "%s:\n" l
+  | Label  l           -> Printf.sprintf "%s:" l
   | Jmp    l           -> Printf.sprintf "\tjmp\t%s" l
   | CJmp  (s , l)      -> Printf.sprintf "\tj%s\t%s" s l
-  | Meta   s           -> Printf.sprintf "%s\n" s
+  | Meta   s           -> Printf.sprintf "%s" s
 
 (* Opening stack machine to use instructions without fully qualified names *)
 open SM
+
+let suf_for = function
+  | "==" -> "e"
+  | "!=" -> "ne"
+  | "<=" -> "le"
+  | "<"  -> "l"
+  | ">=" -> "ge"
+  | ">"  -> "g"
+
+let simple_op env op =
+  let y, x, env = env#pop2 in
+  let res, env = env#allocate in
+  env,
+  [
+      Mov  (x, eax);
+      Binop (op, y, eax);
+      Mov  (eax, res);
+  ]
+
+let cmp env op =
+  let y, x, env = env#pop2 in
+  let res, env = env#allocate in
+  env,
+  [
+    Mov (x, eax);
+    Binop ("cmp", y, eax);
+    Mov (L 0, eax);
+    Set (suf_for op, "%al");
+    Mov (eax, res);
+  ]
+
+(* NOTE: calling this on Ms is bad *)
+let cast_to_bool opnd =
+  [
+    Mov (opnd, eax);
+    Binop ("^", L 0, eax);
+    Mov (L 0, eax);
+    Set ("nz", "%al");
+    Mov (eax, opnd);
+  ]
+
+let with_cast_to_bool env op =
+  let y, x, env = env#pop2 in
+  let env = env#push x in
+  let env = env#push y in
+  let env, clrest = simple_op env op in
+  env,
+  cast_to_bool y @ cast_to_bool x @ clrest
 
 (* Symbolic stack machine evaluator
 
@@ -90,7 +138,127 @@ open SM
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
    of x86 instructions
 *)
-let compile env code = failwith "Not implemented"
+(* TODO: protect %eax and %edx *)
+let rec compile env prg = match prg with
+  | [] -> env, []
+  | op::rest ->
+    let env, c = match op with
+    | CONST n ->
+      let x, env = env#allocate in
+      env, [Mov (L n, x)]
+    | READ ->
+      let res, env = env#allocate in
+      env,
+      [
+        Push ebp;
+        Mov  (esp, ebp);
+        Call "Lread";
+        Mov  (ebp, esp);
+        Pop ebp;
+        Mov  (eax, res);
+      ]
+    | WRITE ->
+      let x, env = env#pop in
+      env,
+      [
+        Push ebp;
+        Mov  (esp, ebp);
+        Push x;
+        Call "Lwrite";
+        Mov  (ebp, esp);
+        Pop ebp;
+      ]
+    | LD x ->
+      let env = env#global x in
+      let v, env = env#allocate in
+      env,
+      [
+        Mov (env#loc x, eax);
+        Mov (eax, v);
+      ] (* NOTE: just pushing (env#loc x) to symbolic stack is a bad idea *)
+    | ST x ->
+      let env = env#global x in
+      let v, env = env#pop in
+      env,
+      [
+        Mov (v, eax);
+        Mov (eax, env#loc x);
+      ]
+    | LABEL l -> env, [Label l]
+    | JMP l -> env, [Jmp l]
+    | CJMP (c, l) -> 
+      let x, env = env#pop in
+      env, 
+      [
+        Mov (x, eax);
+        Binop ("^", L 0, eax);
+        CJmp (c, l);
+      ]
+    | BEGIN (name, params, locals) ->
+      let env = env#enter name params locals in
+      env,
+      [
+        Push ebp;
+        Mov  (esp, ebp);
+        Binop ("-", M ("$" ^ env#lsize), esp);
+      ]
+    | CALL (name, n, p) ->
+      let xs, env = env#popn n in
+      let live = env#live_registers in
+      let pops = List.map (fun x -> Pop x) (List.rev live) in
+      let l =
+      (List.map (fun x -> Push x) live) @
+      (List.map (fun x -> Push x) (List.rev xs)) @
+      [ 
+        Call name;
+        Binop ("+", L (4 * n), esp);
+      ] in
+      if p then env, l @ pops 
+      else let x, env = env#allocate in env, l @ [ Mov (eax, x) ] @ pops
+    | RET func ->
+      let jmp = [ Jmp env#epilogue ] in
+      if func then
+        let x, env = env#pop in
+        env, [ Mov (x, eax) ] @ jmp
+      else 
+        env, jmp
+    | END ->
+      env, 
+      [
+        Label env#epilogue;
+        Meta (Printf.sprintf "\t.set\t%s,\t%d" env#lsize (4 * env#allocated));
+        Mov (ebp, esp);
+        Pop ebp;
+        Ret;
+      ]
+    | BINOP op ->
+      match op with
+      | "+" | "-" | "*" -> simple_op env op
+      | "&&" | "!!" -> with_cast_to_bool env op
+      | "/"  ->
+        let y, x, env = env#pop2 in
+        let res, env = env#allocate in
+        env,
+        [
+          Mov  (x, eax);
+          Cltd;
+          IDiv y;
+          Mov  (eax, res);
+        ]
+      | "%" ->
+        let y, x, env = env#pop2 in
+        let res, env = env#allocate in
+        env,
+        [
+          Mov  (x, eax);
+          Cltd;
+          IDiv y;
+          Mov  (edx, res);
+        ]
+      | "==" | "!=" | "<=" | "<" | ">=" | ">"  -> cmp env op
+    in
+    let env, crest = compile env rest in
+    env, c @ crest
                                 
 (* A set of strings *)           
 module S = Set.Make (String)
@@ -120,7 +288,7 @@ class env =
 	| []                            -> ebx     , 0
 	| (S n)::_                      -> S (n+1) , n+2
 	| (R n)::_ when n < num_of_regs -> R (n+1) , stack_slots
-        | (M _)::s                      -> allocate' s
+	| (M _)::s                      -> allocate' s
 	| _                             -> S 0     , 1
 	in
 	allocate' stack
@@ -135,6 +303,13 @@ class env =
 
     (* pops two operands from the symbolic stack *)
     method pop2 = let x::y::stack' = stack in x, y, {< stack = stack' >}
+    
+    (* pops n operands from the symbolic stack *)
+    method popn n = match n with
+    | 0 -> [], self
+    | _ -> let x, env = self#pop in
+           let l, env = env#popn (n - 1) in
+           x::l, env
 
     (* registers a global variable in the environment *)
     method global x  = {< globals = S.add ("global_" ^ x) globals >}
