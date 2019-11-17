@@ -52,6 +52,10 @@ module State =
     let update x v s =
       let u x v s = fun y -> if x = y then v else s y in
       if List.mem x s.scope then {s with l = u x v s.l} else {s with g = u x v s.g}
+      
+    let rec update_many xs vs s = match xs with
+      | [] -> s
+      | x::xs -> update_many xs (List.tl vs) (update x (List.hd vs) s)
 
     (* Evals a variable in a state w.r.t. a scope *)
     let eval s x = (if List.mem x s.scope then s.l else s.g) x

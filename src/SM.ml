@@ -39,7 +39,7 @@ let split n l =
   in
   unzip ([], l) n
         
-(*let rec eval env ((cs, st, ((s, i, o) as c)) as config) prg =
+let rec eval env ((cs, st, ((s, i, o) as c)) as config) prg =
     match prg with
     | [] -> config
     | (f :: rest) ->
@@ -56,8 +56,10 @@ let split n l =
         | ST x ->
             let z :: st = st in
             eval env (cs, st, (State.update x z s, i, o)) rest
-(* 	| STA (s, i) -> TODO*)
-	    (* TODO *)
+        | STA (x, ic) ->
+            let ixs, st = split ic st in
+            let v::st = st in
+            eval env (cs, st, (Stmt.update s x v ixs, i, o)) rest
         | LABEL l -> eval env config rest
         | JMP l -> eval env config (env#labeled l)
         | CJMP (t, l) ->
@@ -67,12 +69,15 @@ let split n l =
             then eval env config (env#labeled l)
             else eval env config rest
         | BEGIN (func, params, locals) ->
-            let h, t = split_at (List.length params) st in
+            let h, t = split (List.length params) st in
             let s' = State.enter s (params @ locals) in
             let s' = State.update_many params h s' in
             eval env (cs, t, (s', i, o)) rest
         | CALL (name, numparam, isfunc) ->
-           eval env ((rest, s)::cs, st, (s, i, o)) (env#labeled name)
+            if env#is_label name then
+              eval env ((rest, s)::cs, st, (s, i, o)) (env#labeled name)
+            else
+              eval env (env#builtin config name numparam isfunc) rest
         | RET v ->
            let (p', s') :: cs = cs in
            eval env (cs, st, (State.leave s s', i, o)) p'
@@ -81,8 +86,7 @@ let split n l =
             | [] -> config
             | _  ->
                let (p', s') :: cs = cs in
-               eval env (cs, st, (State.leave s s', i, o)) p'*)
-let rec eval env ((cs, st, ((s, i, o) as c)) as config) prg = failwith "Unimplemented"
+               eval env (cs, st, (State.leave s s', i, o)) p'
 
 (* Top-level evaluation
 
@@ -117,6 +121,12 @@ let run p i =
   in
   o
 
+let make_label_gen () =
+  let cnt = Base.ref 0 in
+  fun () ->
+    incr cnt;
+    "label" ^ (string_of_int !cnt)
+
 (* Stack machine compiler
 
      val compile : Language.t -> prg
@@ -124,15 +134,16 @@ let run p i =
    Takes a program in the source language and returns an equivalent program for the
    stack machine
 *)
-(*let compile dt =
+let compile dt =
   let ds, t = dt in
   let rec expr = function
-  | Expr.Var   x          -> [LD x]
-  | Expr.Const n          -> [CONST n]
-  | Expr.String s         -> [STRING s]
-  | Expr.Array            -> [] (* TODO *)
-  (* MORE TODO *)
-  | Expr.Binop (op, x, y) -> expr x @ expr y @ [BINOP op]
+  | Expr.Var   x           -> [LD x]
+  | Expr.Const n           -> [CONST n]
+  | Expr.String s          -> [STRING s]
+  | Expr.Array es          -> List.flatten (List.map expr es) @ [CALL ("$array", List.length es, false)]
+  | Expr.Elem (e, i)       -> expr e @ expr i @ [CALL ("$elem", 2, false)]
+  | Expr.Length e          -> expr e @ [CALL ("$length", 1, false)]
+  | Expr.Binop (op, x, y)  -> expr x @ expr y @ [BINOP op]
   | Expr.Call (name, args) -> List.flatten (List.map expr (List.rev args)) @ [CALL (name, List.length args, false)]
   in
   let label_gen = make_label_gen () in
@@ -144,9 +155,10 @@ let run p i =
     | Stmt.Seq (s1, s2)  ->
       let need, p = compile' outlabel s2 in
       need, condcompile s1 @ p
-    | Stmt.Read x        -> false, [READ; ST x]
-    | Stmt.Write e       -> false, expr e @ [WRITE]
-    | Stmt.Assign (x, e) -> false, expr e @ [ST x]
+    | Stmt.Assign (x, ixs, e) -> (match ixs with
+      | [] -> false, expr e @ [ST x]
+      | _  -> false, List.flatten (List.map expr (e::(List.rev ixs))) @ [STA (x, List.length ixs)]
+      )
     | Stmt.Skip          -> false, []
     | Stmt.If (c, t, f)  ->
       let els = label_gen () in
@@ -176,5 +188,4 @@ let run p i =
     [LABEL name; BEGIN (name, params, locals)] @ condcompile body @ [END]
   in
   condcompile t @ [END] @
-  List.flatten (List.map compile_def ds)*)
-let compile dt = failwith "Unimplemented"
+  List.flatten (List.map compile_def ds)
