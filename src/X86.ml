@@ -1,5 +1,5 @@
 open GT
-       
+      
 (* X86 codegeneration interface *)
 
 (* The registers: *)
@@ -17,6 +17,7 @@ let word_size = 4;;
 | S of int     (* a position on the hardware stack *)
 | M of string  (* a named memory location          *)
 | L of int     (* an immediate operand             *)
+| I of string  (* immediate label address          *)
 with show
 
 (* For convenience we define the following synonyms for the registers: *)         
@@ -52,7 +53,7 @@ type instr =
 (* arithmetic correction: or 0x0001                     *) | Or1   of opnd
 (* arithmetic correction: shl 1                         *) | Sal1  of opnd
 (* arithmetic correction: shr 1                         *) | Sar1  of opnd
-                                                                                                                                   
+                                                                                                                                  
 (* Instruction printer *)
 let show instr =
   let binop = function
@@ -68,10 +69,11 @@ let show instr =
   let opnd = function
   | R i -> regs.(i)
   | S i -> if i >= 0
-           then Printf.sprintf "-%d(%%ebp)" ((i+1) * word_size)
-           else Printf.sprintf "%d(%%ebp)"  (8+(-i-1) * word_size)
+          then Printf.sprintf "-%d(%%ebp)" ((i+1) * word_size)
+          else Printf.sprintf "%d(%%ebp)"  (8+(-i-1) * word_size)
   | M x -> x
   | L i -> Printf.sprintf "$%d" i
+  | I x -> "$" ^ x
   in
   match instr with
   | Cltd               -> "\tcltd"
@@ -91,9 +93,89 @@ let show instr =
   | Or1    s           -> Printf.sprintf "\torl\t$0x0001,\t%s" (opnd s)
   | Sal1   s           -> Printf.sprintf "\tsall\t%s" (opnd s)
   | Sar1   s           -> Printf.sprintf "\tsarl\t%s" (opnd s)
-                                         
+                                        
 (* Opening stack machine to use instructions without fully qualified names *)
 open SM
+
+(* Symbolic stack machine evaluator
+
+    compile : env -> prg -> env * instr list
+
+  Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
+  of x86 instructions
+*)
+let suf_for = function
+  | "==" -> "e"
+  | "!=" -> "ne"
+  | "<=" -> "le"
+  | "<"  -> "l"
+  | ">=" -> "ge"
+  | ">"  -> "g"
+
+let simple_op env op =
+  let y, x, env = env#pop2 in
+  let res, env = env#allocate in
+  env,
+  [
+      Mov  (x, eax);
+      Binop (op, y, eax);
+      Mov  (eax, res);
+  ]
+
+let cmp env op =
+  let y, x, env = env#pop2 in
+  let res, env = env#allocate in
+  env,
+  [
+    Mov (x, eax);
+    Binop ("cmp", y, eax);
+    Mov (L 0, eax);
+    Set (suf_for op, "%al");
+    Mov (eax, res);
+  ]
+
+(* NOTE: calling this on Ms is bad *)
+let cast_to_bool opnd =
+  [
+    Mov (opnd, eax);
+    Binop ("^", L 0, eax);
+    Mov (L 0, eax);
+    Set ("nz", "%al");
+    Mov (eax, opnd);
+  ]
+
+let with_cast_to_bool env op =
+  let y, x = env#peek2 in
+  let env, clrest = simple_op env op in
+  env,
+  cast_to_bool y @ cast_to_bool x @ clrest
+
+let call env f n p =
+  let f =
+    match f.[0] with '.' -> "B" ^ String.sub f 1 (String.length f - 1) | _ -> f
+  in
+  let pushr, popr =
+    List.split @@ List.map (fun r -> (Push r, Pop r)) (env#live_registers n)
+  in
+  let env, code =
+    if n = 0
+    then env, pushr @ [Call f] @ (List.rev popr)
+    else
+      let ops, env = env#popn n in
+      let pushs = List.map (fun x -> Push x) (List.rev ops) in
+      let pushs, n      =
+        match f with
+        | "Barray" -> (List.rev @@ (Push (L n)) :: pushs), n+1
+        | "Bsta"   -> 
+            let v::is = pushs in
+            let x::is = List.rev is in
+            ((List.rev is) @ [x; v; Push (L (n-2))]), n+1
+        | "Bsexp"  -> ((List.rev pushs) @ [Push (L n)]), n+1
+        | _  -> (List.rev pushs), n
+      in
+      env, pushr @ pushs @ [Call f; Binop ("+", L (n*4), esp)] @ (List.rev popr)
+  in
+  (if p then env, code else let y, env = env#allocate in env, code @ [Mov (eax, y)])
 
 (* Symbolic stack machine evaluator
 
@@ -102,7 +184,128 @@ open SM
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
    of x86 instructions
 *)
-let compile env code = failwith "Not implemented yet"
+let rec compile env prg = match prg with
+  | [] -> env, []
+  | op::rest ->
+    let env, c = match op with
+    | BINOP op -> (
+      match op with
+      | "+" | "-" | "*" -> simple_op env op
+      | "&&" | "!!" -> with_cast_to_bool env op
+      | "/"  ->
+        let y, x, env = env#pop2 in
+        let res, env = env#allocate in
+        env,
+        [
+          Mov  (x, eax);
+          Cltd;
+          IDiv y;
+          Mov  (eax, res);
+        ]
+      | "%" ->
+        let y, x, env = env#pop2 in
+        let res, env = env#allocate in
+        env,
+        [
+          Mov  (x, eax);
+          Cltd;
+          IDiv y;
+          Mov  (edx, res);
+        ]
+      | _ -> cmp env op
+    )
+    | STRING x -> 
+      let s, env = env#string x in
+      let env = env#push (I s) in
+      call env ".string" 1 false
+    | SEXP (c, n) ->
+      let env = env#push @@ L (env#hash c) in
+      call env ".sexp" (n+1) false
+    | CONST n ->
+      let x, env = env#allocate in
+      env, [Mov (L n, x)]
+    | LD x ->
+      let env = env#global x in
+      let v, env = env#allocate in
+      env,
+      [
+        Mov (env#loc x, eax);
+        Mov (eax, v);
+      ] (* NOTE: just pushing (env#loc x) to symbolic stack is a bad idea *)
+    | ST x ->
+      let env = env#global x in
+      let v, env = env#pop in
+      env,
+      [
+        Mov (v, eax);
+        Mov (eax, env#loc x);
+      ]
+    | STA (a, n) ->
+      let env = env#push (env#loc a) in
+      call env ".sta" (n+2) true
+    | LABEL l -> (if env#is_barrier 
+                  then (env#drop_barrier)#retrieve_stack l 
+                  else env), [Label l]
+    | JMP l -> (env#set_stack l)#set_barrier, [Jmp l]
+    | CJMP (c, l) -> 
+      let x, env = env#pop in
+      env#set_stack l, 
+      [
+        Mov (x, eax);
+        Binop ("^", L 0, eax);
+        CJmp (c, l);
+      ]
+    | BEGIN (name, params, locals) ->
+      let env = env#enter name params locals in
+      env,
+      [
+        Push ebp;
+        Mov  (esp, ebp);
+        Binop ("-", I env#lsize, esp);
+      ]
+    | END ->
+      env, 
+      [
+        Label env#epilogue;
+        Meta (Printf.sprintf "\t.set\t%s,\t%d" env#lsize (4 * env#allocated));
+        Mov (ebp, esp);
+        Pop ebp;
+        Ret;
+      ]
+    | CALL (name, n, p) ->
+      call env name n p
+    | RET func ->
+      let jmp = [ Jmp env#epilogue ] in
+      if func then
+        let x, env = env#pop in
+        env, [ Mov (x, eax) ] @ jmp
+      else 
+        env, jmp
+    | DROP -> 
+        let _, env = env#pop in
+        env, []
+    | DUP  -> 
+      let y = env#peek in
+      let x, env = env#allocate in
+      env, [ Mov (y, eax); Mov (eax, x) ]
+    | SWAP -> let x, y = env#peek2 in
+      env, [ Mov (y, eax); Mov (x, y); Mov (eax, x) ]
+    | TAG t -> 
+      let env = env#push @@ L (env#hash t) in
+      call env ".tag" 2 false
+    | ENTER xs -> 
+      let vals, env = env#popn @@ List.length xs in
+      let env = env#scope xs in
+      let prog = List.flatten @@ List.map
+      (fun vl, pl ->
+        [Mov (vl, eax); Mov (eax, env#loc pl)]
+      ) (List.combine vals (List.rev xs))
+      in
+      env, prog
+    | LEAVE -> env#unscope, []
+    in
+    let env, crest = compile env rest in
+    env, c @ crest
 
 (* A set of strings *)           
 module S = Set.Make (String) 
@@ -130,7 +333,7 @@ class env =
                         
     method show_stack =
       GT.show(list) (GT.show(opnd)) stack
-             
+            
     method print_locals =
       Printf.printf "LOCALS: size = %d\n" static_size;
       List.iter
@@ -152,11 +355,11 @@ class env =
                             
     (* associates a stack to a label *)
     method set_stack l = (*Printf.printf "Setting stack for %s\n" l;*) {< stackmap = M.add l stack stackmap >}
-                               
+                              
     (* retrieves a stack for a label *)
     method retrieve_stack l = (*Printf.printf "Retrieving stack for %s\n" l;*)
       try {< stack = M.find l stackmap >} with Not_found -> self
-                               
+                              
     (* gets a name for a global variable *)
     method loc x =
       try S (- (List.assoc x args)  -  1)
@@ -166,13 +369,13 @@ class env =
     (* allocates a fresh position on a symbolic stack *)
     method allocate =    
       let x, n =
-	let rec allocate' = function
-	| []                            -> ebx          , 0
-	| (S n)::_                      -> S (n+1)      , n+2
-	| (R n)::_ when n < num_of_regs -> R (n+1)      , stack_slots
-	| _                             -> S static_size, static_size+1
-	in
-	allocate' stack
+        let rec allocate' = function
+        | []                            -> ebx          , stack_slots
+        | (S n)::_                      -> S (n+1)      , n+2
+        | (R n)::_ when n < num_of_regs -> R (n+1)      , stack_slots
+        | _                             -> S static_size, static_size+1
+        in
+        allocate' stack
       in
       x, {< stack_slots = max n stack_slots; stack = x::stack >}
 
@@ -184,6 +387,13 @@ class env =
 
     (* pops two operands from the symbolic stack *)
     method pop2 = let x::y::stack' = stack in x, y, {< stack = stack' >}
+    
+        (* pops n operands from the symbolic stack *)
+    method popn n = match n with
+    | 0 -> [], self
+    | _ -> let x, env = self#pop in
+           let l, env = env#popn (n - 1) in
+           x::l, env
 
     (* peeks the top of the stack (the stack does not change) *)
     method peek = List.hd stack
@@ -198,7 +408,7 @@ class env =
         h := (!h lsl 6) lor (String.index chars tag.[i])
       done;
       !h      
-             
+            
     (* registers a global variable in the environment *)
     method global x  = {< globals = S.add ("global_" ^ x) globals >}
 
@@ -209,7 +419,7 @@ class env =
         let y = Printf.sprintf "string_%d" scount in
         let m = M.add x y stringm in
         y, {< scount = scount + 1; stringm = m>}
-                       
+                      
     (* gets all global variables *)      
     method globals = S.elements globals
 
@@ -237,7 +447,7 @@ class env =
         
     (* returns a label for the epilogue *)
     method epilogue = Printf.sprintf "L%s_epilogue" fname
-                                     
+                                    
     (* returns a name for local size meta-symbol *)
     method lsize = Printf.sprintf "L%s_SIZE" fname
 
@@ -249,11 +459,11 @@ class env =
       | _::tl          -> inner (d+1) acc tl
       in
       inner 0 [] stack
-       
+      
   end
   
 (* Generates an assembler text for a program: first compiles the program into
-   the stack code, then generates x86 assember code, then prints the assembler file
+  the stack code, then generates x86 assember code, then prints the assembler file
 *)
 let genasm (ds, stmt) =
   let stmt = Language.Stmt.Seq (stmt, Language.Stmt.Return (Some (Language.Expr.Call ("raw", [Language.Expr.Const 0])))) in
@@ -263,7 +473,7 @@ let genasm (ds, stmt) =
       ((LABEL "main") :: (BEGIN ("main", [], [])) :: SM.compile (ds, stmt))
   in
   let data = Meta "\t.data" :: (List.map (fun s      -> Meta (Printf.sprintf "%s:\t.int\t0"         s  )) env#globals) @
-                               (List.map (fun (s, v) -> Meta (Printf.sprintf "%s:\t.string\t\"%s\"" v s)) env#strings) in 
+                              (List.map (fun (s, v) -> Meta (Printf.sprintf "%s:\t.string\t\"%s\"" v s)) env#strings) in 
   let asm = Buffer.create 1024 in
   List.iter
     (fun i -> Buffer.add_string asm (Printf.sprintf "%s\n" @@ show i))
@@ -277,4 +487,4 @@ let build prog name =
   close_out outf;
   let inc = try Sys.getenv "RC_RUNTIME" with _ -> "../runtime" in
   Sys.command (Printf.sprintf "gcc -m32 -o %s %s/runtime.o %s.s" name inc name)
- 
+
