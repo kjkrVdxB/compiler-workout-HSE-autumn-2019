@@ -15,3 +15,4 @@ clean:
 	$(RM) test*.log *.s *~ $(TESTS)
 	$(MAKE) clean -C expressions
 	$(MAKE) clean -C deep-expressions
+	$(MAKE) clean -C x86only
