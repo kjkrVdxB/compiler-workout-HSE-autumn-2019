@@ -1,5 +1,6 @@
 /* Runtime library */
 
+#define _GNU_SOURCE
 # include <stdio.h>
 # include <string.h>
 # include <stdarg.h>
@@ -8,9 +9,9 @@
 # include <assert.h>
 
 #define NIMPL fprintf (stderr, "Internal error: "			\
-		       "function %s at file %s, line %d is not implemented yet", \
-		       __func__, __FILE__, __LINE__);			\
-  exit(1);
+"function %s at file %s, line %d is not implemented yet", \
+__func__, __FILE__, __LINE__);			\
+exit(1);
 
 extern void nimpl (void) { NIMPL }
 
@@ -39,6 +40,8 @@ typedef struct {
 } sexp; 
 
 extern void* alloc (size_t);
+extern void __pre_gc ();
+extern void __post_gc ();
 
 extern int Blength (void *p) {
   data *a = (data*) BOX (NULL);
@@ -52,9 +55,9 @@ char* de_hash (int n) {
   char *p = (char *) BOX (NULL);
   chars =  "_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNJPQRSTUVWXYZ";
   p = &buf[5];
-
+  
   *p-- = 0;
-
+  
   while (n != 0) {
     *p-- = chars [n & 0x003F];
     n = n >> 6;
@@ -85,7 +88,7 @@ static void deleteStringBuf () {
 
 static void extendStringBuf () {
   int len = stringBuf.len << 1;
-
+  
   stringBuf.contents = (char*) realloc (stringBuf.contents, len);
   stringBuf.len      = len;
 }
@@ -93,10 +96,10 @@ static void extendStringBuf () {
 static void printStringBuf (char *fmt, ...) {
   va_list args    = (va_list) BOX(NULL);
   int     written = 0,
-          rest    = 0;
+  rest    = 0;
   char   *buf     = (char*) BOX(NULL);
-
- again:
+  
+  again:
   va_start (args, fmt);
   buf     = &stringBuf.contents[stringBuf.ptr];
   rest    = stringBuf.len - stringBuf.ptr;
@@ -106,7 +109,7 @@ static void printStringBuf (char *fmt, ...) {
     extendStringBuf ();
     goto again;
   }
-
+  
   stringBuf.ptr += written;
 }
 
@@ -116,35 +119,35 @@ static void printValue (void *p) {
   if (UNBOXED(p)) printStringBuf ("%d", UNBOX(p));
   else {
     a = TO_DATA(p);
-
+    
     switch (TAG(a->tag)) {      
-    case STRING_TAG:
-      printStringBuf ("\"%s\"", a->contents);
-      break;
-      
-    case ARRAY_TAG:
-      printStringBuf ("[");
-      for (i = 0; i < LEN(a->tag); i++) {
-        printValue ((void*)((int*) a->contents)[i]);
-	if (i != LEN(a->tag) - 1) printStringBuf (", ");
-      }
-      printStringBuf ("]");
-      break;
-      
-    case SEXP_TAG:
-      printStringBuf ("`%s", de_hash (TO_SEXP(p)->tag));
-      if (LEN(a->tag)) {
-	printStringBuf (" (");
-	for (i = 0; i < LEN(a->tag); i++) {
-	  printValue ((void*)((int*) a->contents)[i]);
-	  if (i != LEN(a->tag) - 1) printStringBuf (", ");
-	}
-	printStringBuf (")");
-      }
-      break;
-      
-    default:
-      printStringBuf ("*** invalid tag: %p ***", TAG(a->tag));
+      case STRING_TAG:
+        printStringBuf ("\"%s\"", a->contents);
+        break;
+        
+      case ARRAY_TAG:
+        printStringBuf ("[");
+        for (i = 0; i < LEN(a->tag); i++) {
+          printValue ((void*)((int*) a->contents)[i]);
+          if (i != LEN(a->tag) - 1) printStringBuf (", ");
+        }
+        printStringBuf ("]");
+        break;
+        
+      case SEXP_TAG:
+        printStringBuf ("`%s", de_hash (TO_SEXP(p)->tag));
+        if (LEN(a->tag)) {
+          printStringBuf (" (");
+          for (i = 0; i < LEN(a->tag); i++) {
+            printValue ((void*)((int*) a->contents)[i]);
+            if (i != LEN(a->tag) - 1) printStringBuf (", ");
+          }
+          printStringBuf (")");
+        }
+        break;
+        
+      default:
+        printStringBuf ("*** invalid tag: %p ***", TAG(a->tag));
     }
   }
 }
@@ -162,39 +165,47 @@ extern void* Belem (void *p, int i) {
 }
 
 extern void* Bstring (void *p) {
+  __pre_gc();
+  
   int n   = BOX(0);
   data *r = NULL;
-
+  
   n = strlen (p);
   r = (data*) alloc (n + 1 + sizeof (int));
-
+  
   r->tag = STRING_TAG | (n << 3);
   strncpy (r->contents, p, n + 1);
   
+  __post_gc();
   return r->contents;
 }
 
 extern void* Bstringval (void *p) {
+  __pre_gc();
+  
   void *s = (void *) BOX (NULL);
-
+  
   createStringBuf ();
   printValue (p);
-
+  
   s = Bstring (stringBuf.contents);
   
   deleteStringBuf ();
-
+  
+  __post_gc();  
   return s;
 }
 
 extern void* Barray (int n, ...) {
+  __pre_gc();
+  
   va_list args = (va_list) BOX (NULL);
   int     i    = BOX(0),
-          ai   = BOX(0);
+  ai   = BOX(0);
   data    *r   = (data*) BOX (NULL);
-
+  
   r = (data*) alloc (sizeof(int) * (n+1));
-
+  
   r->tag = ARRAY_TAG | (n << 3);
   
   va_start(args, n);
@@ -205,22 +216,25 @@ extern void* Barray (int n, ...) {
   }
   
   va_end(args);
-
+  
+  __post_gc();  
   return r->contents;
 }
 
 extern void* Bsexp (int n, ...) {
+  __pre_gc();
+  
   va_list args = (va_list) BOX (NULL);
   int     i    = BOX(0);
   int     ai   = BOX(0);
   size_t * p   = NULL;
   sexp   *r    = (sexp *) BOX (NULL);
   data   *d    = (data *) BOX (NULL);
-
+  
   r = (sexp*) alloc (sizeof(int) * (n+1));
   d = &(r->contents);
   r->tag = 0;
-    
+  
   d->tag = SEXP_TAG | ((n-1) << 3);
   
   va_start(args, n);
@@ -231,10 +245,11 @@ extern void* Bsexp (int n, ...) {
     p = (size_t*) ai;
     ((int*)d->contents)[i] = ai;
   }
-
+  
   r->tag = va_arg(args, int);
   va_end(args);
-
+  
+  __post_gc();
   return d->contents;
 }
 
@@ -245,7 +260,7 @@ extern int Btag (void *d, int t, int n) {
 }
 
 extern int Barray_patt (void *d, int n) {
-  data *r = BOX(NULL);
+  data *r = (data *) BOX(NULL);
   if (UNBOXED(d)) return BOX(0);
   else {
     r = TO_DATA(d);
@@ -255,11 +270,11 @@ extern int Barray_patt (void *d, int n) {
 
 extern int Bstring_patt (void *x, void *y) {
   data *rx = (data *) BOX (NULL),
-       *ry = (data *) BOX (NULL);
+  *ry = (data *) BOX (NULL);
   if (UNBOXED(x)) return BOX(0);
   else {
     rx = TO_DATA(x); ry = TO_DATA(y);
-
+    
     if (TAG(rx->tag) != STRING_TAG) return BOX(0);
     
     return BOX(strcmp (rx->contents, ry->contents) == 0 ? 1 : 0);
@@ -298,12 +313,12 @@ extern void Bsta (int n, int v, void *s, ...) {
   data *a = (data*) BOX (NULL);
   
   va_start(args, s);
-
+  
   for (i = 0; i < n-1; i++) {
     k = UNBOX(va_arg(args, int));
     s = ((int**) s) [k];
   }
-
+  
   k = UNBOX(va_arg(args, int));
   a = TO_DATA(s);
   
@@ -317,33 +332,36 @@ extern int Lraw (int x) {
 
 extern void Lprintf (char *s, ...) {
   va_list args = (va_list) BOX (NULL);
-
+  
   va_start (args, s);
   vprintf  (s, args); // vprintf (char *, va_list) <-> printf (char *, ...) 
   va_end   (args);
 }
 
 extern void* Lstrcat (void *a, void *b) {
+  __pre_gc();
+  
   data *da = (data*) BOX (NULL);
   data *db = (data*) BOX (NULL);
   data *d  = (data*) BOX (NULL);
-
+  
   da = TO_DATA(a);
   db = TO_DATA(b);
-
+  
   d  = (data *) alloc (sizeof(int) + LEN(da->tag) + LEN(db->tag) + 1);
-
+  
   d->tag = LEN(da->tag) + LEN(db->tag);
-
+  
   strcpy (d->contents, da->contents);
   strcat (d->contents, db->contents);
-
+  
+  __post_gc();
   return d->contents;
 }
 
 extern void Lfprintf (FILE *f, char *s, ...) {
   va_list args = (va_list) BOX (NULL);
-
+  
   va_start (args, s);
   vfprintf (f, s, args);
   va_end   (args);
@@ -356,15 +374,15 @@ extern FILE* Lfopen (char *f, char *m) {
 extern void Lfclose (FILE *f) {
   fclose (f);
 }
-   
+
 /* Lread is an implementation of the "read" construct */
 extern int Lread () {
   int result = BOX(0);
-
+  
   printf ("> "); 
   fflush (stdout);
   scanf  ("%d", &result);
-
+  
   return BOX(result);
 }
 
@@ -372,7 +390,7 @@ extern int Lread () {
 extern int Lwrite (int n) {
   printf ("%d\n", UNBOX(n));
   fflush (stdout);
-
+  
   return 0;
 }
 
@@ -380,43 +398,43 @@ extern int Lwrite (int n) {
 /*         GC: Mark-and-Copy                */
 /* ======================================== */
 
-/* Heap is devided on two semi-spaces called active (to-) space and passive (from-) space. */
+/* Heap is divided into two semi-spaces called active (from-) space and passive (to-) space. */
 /* Each space is a continuous memory area (aka pool, see @pool). */
-/* Note, it have to be no external fragmentation after garbage collection. */
-/* Memory is allocated by function @alloc. */
+/* Note, there has to be no external fragmentation after garbage collection. */
+/* Memory is allocated by the @alloc function. */
 /* Garbage collection has to be performed by memory allocator if there is not enough space to */
 /* allocate the requested size memory area. */
 
 /* The section implements stop-the-world mark-and-copy garbage collection. */
 /* Formally, it consists of 4 stages: */
-/* 1. Root set constraction */
+/* 1. Root set construction */
 /* 2. Mark phase */
-/*   I.e. marking each reachable from the root set via a chain of pointers object as alive. */
+/*   i.e. marking each object reachable from the root set via a chain of pointers object as alive. */
 /* 3. Copy */
-/*   I.e. copying each alive object from active space into passive space. */
-/* 4. Fix pointers. */
+/*   i.e. copying each alive object from active space into passive space. */
+/* 4. Fix pointers */
 /* 5. Swap spaces */
-/*   I.e. active space becomes passive and vice versa. */
+/*   i.e. active space becomes passive and vice versa. */
 /* In the implementation, the first four steps are performed together. */
-/* Where root can be found in: */
+/* Where root can be found: */
 /* 1) Static area. */
-/*   Globals @__gc_data_end and @__gc_data_start are used to idenfity the begin and the end */
+/*   Globals @__gc_data_end and @__gc_data_start are used to identify the beginning and the end */
 /*   of the static data area. They are defined while generating X86 code in src/X86.ml */
 /*   (function genasm). */
 /* 2) Program stack. */
 /*   Globals @__gc_stack_bottom and @__gc_stack_top (see runctime/gc_runtime.s) have to be set */
-/*   as the begin and the end of program stack or its part where roots can be found. */
+/*   as the beginning and the end of program stack or its part where roots can be found. */
 /* 3) Traditionally, roots can be also found in registers but our compiler always saves all */
 /*   registers on program stack before any external function call. */
 /* You have to implement functions that perform traverse static area (@gc_root_scan_data) */
 /* and program stack (@__gc_root_scan_stack, see runtime/gc_runtime.s) as well as a function */
 /* (@gc_test_and_copy_root) that checks if a word is a valid heap pointer, and, if so, */
-/* call copy-function. Copy-function (@gc_copy) has to move an object into passive semi-space, */
-/* rest a forward pointer instead of the object, scan object for pointers, call copying */
+/* call copy-function. Copy-function (@gc_copy) should move an object into passive semi-space, */
+/* put a forward pointer instead of the object, scan object for pointers, call copying */
 /* for each found pointer. */
 
 
-// The begin and the end of static area (are specified in src/X86.ml fucntion genasm)
+// The beginning and the end of static area (are specified in src/X86.ml function genasm)
 extern const size_t __gc_data_end, __gc_data_start;
 
 // @L__gc_init is defined in runtime/runtime.s
@@ -427,15 +445,15 @@ extern void L__gc_init ();
 //   finds roots in program stack and calls @gc_test_and_copy_root for each found root
 extern void __gc_root_scan_stack ();
 
-// You also have to define two functions @__pre_gc and @__post_gc in runtime/gc_runtime.s.
-// These auxiliary functions have to be defined in oder to correctly set @__gc_stack_top.
-// Note that some of our functions (from runtime.c) activation records can be on top of the
+// You should also define two functions @__pre_gc and @__post_gc in runtime/gc_runtime.s.
+// These auxiliary functions have to be defined in order to correctly set @__gc_stack_top.
+// Note that some of our functions' (from runtime.c) activation records can be on top of the
 // program stack. These activation records contain usual values and thus we do not have a
 // way to distinguish pointers from non-pointers. And some of these values may accidentally be
-// equal to pointers into active semi-space but maybe not to the begin of an object.
+// equal to pointers into active semi-space but maybe not to the beginning of an object.
 // Calling @gc_copy on such values leads to undefined behavior.
-// Thus, @__gc_stack_top has to point before these activation records. 
-// Note, you also have to find a correct place(-s) for @__pre_gc and @__post_gc to be called.
+// Thus, @__gc_stack_top should point before these activation records. 
+// Note, you should also find a correct place(-s) for @__pre_gc and @__post_gc to be called.
 // @__pre_gc  sets up @__gc_stack_top if it is not set yet
 extern void __pre_gc  ();
 // @__post_gc sets @__gc_stack_top to zero if it was set by the caller
@@ -454,56 +472,139 @@ static pool   to_space;   // To-space   (passive) semi-heap
 static size_t *current;   // Pointer to the free space begin in active space
 
 // initial semi-space size
-static size_t SPACE_SIZE = 128;
+static size_t SPACE_SIZE = 8;
 # define POOL_SIZE (2*SPACE_SIZE)
 
+# define WORD (sizeof(size_t))
+
 // swaps active and passive spaces
-static void gc_swap_spaces (void) { NIMPL }
+static void gc_swap_spaces (void) {
+  char tmp[sizeof(pool)];
+  memcpy(tmp, &from_space, sizeof(pool));
+  memcpy(&from_space, &to_space, sizeof(pool));
+  memcpy(&to_space, tmp, sizeof(pool));
+}
 
 // checks if @p is a valid pointer to the active (from-) space
+// NOTE: looking at (p-1) since we have pointers at content, bu the content
+//       can have size zero (like constructore without parameters, or
+//       empty array, or empty string), by the byte before that is always
+//       on the heap
 # define IS_VALID_HEAP_POINTER(p)\
-  (!UNBOXED(p) &&		 \
-   from_space.begin <= p &&	 \
-   from_space.end   >  p)
+(!UNBOXED(p) &&		 \
+from_space.begin <= (p-1) &&	 \
+from_space.end   >  (p-1)) 
 
 // checks if @p points to the passive (to-) space
+// NOTE: see note about -1 above
 # define IN_PASSIVE_SPACE(p)	\
-  (to_space.begin <= p	&&	\
-   to_space.end   >  p)
+(to_space.begin <= (p-1)	&&	\
+to_space.end   >  (p-1))
 
-// chekcs if @p is a forward pointer
+// checks if @p is a forward pointer
 # define IS_FORWARD_PTR(p)			\
-  (!UNBOXED(p) && IN_PASSIVE_SPACE(p))
+(!UNBOXED(p) && IN_PASSIVE_SPACE(p))
 
 extern size_t * gc_copy (size_t *obj);
 
 // @copy_elements
 //   1) copies @len words from @from to @where
 //   2) calls @gc_copy for those of these words which are valid pointers to from_space
-static void copy_elements (size_t *where, size_t *from, int len) { NIMPL }
+static void copy_elements (size_t *where, size_t *from, int len) {
+  memcpy(where, from, len * WORD);
+  for (int i = 0; i < len; ++i) {
+    size_t *ptr = (size_t*)where[i];
+    if (IS_VALID_HEAP_POINTER(ptr)) {
+      where[i] = (size_t)gc_copy(ptr);
+    }
+  }
+}
 
 // @extend_spaces extends size of both from- and to- spaces
-static void extend_spaces (void) { NIMPL }
+static void extend_spaces (void) {
+  int new_size = SPACE_SIZE * 2;
+  from_space.begin = mremap(from_space.begin, SPACE_SIZE * WORD, new_size * WORD, 0);
+  from_space.end = from_space.begin + new_size;
+  from_space.size = new_size;
+  to_space.begin = mremap(to_space.begin, SPACE_SIZE * WORD, new_size * WORD, 0);
+  to_space.end = to_space.begin + new_size;
+  to_space.size = new_size;
+  SPACE_SIZE = new_size;
+}
 
 // @gc_copy takes a pointer to an object, copies it
 //   (i.e. moves from from_space to to_space)
-//   , rests a forward pointer, and returns new object location.
-extern size_t * gc_copy (size_t *obj) { NIMPL }
+//   , put a forward pointer, and returns new object location.
+extern size_t * gc_copy (size_t *obj) {
+  data *d = TO_DATA(obj);
+  if (IS_FORWARD_PTR((size_t*)(d->tag))) {
+    return (size_t*)(d->tag);
+  }
+  int len;
+  int shift;
+  size_t *start = to_space.current;
+  if (TAG(d->tag) == STRING_TAG) {
+    len = WORD + LEN(d->tag);
+    len = (len + WORD - 1) / WORD;
+    shift = 1;
+    to_space.current += len;
+    memcpy(start, obj - shift, len * WORD);
+  } else if (TAG(d->tag) == ARRAY_TAG) {
+    shift = 1;
+  } else if (TAG(d->tag) == SEXP_TAG) {
+    shift = 2;
+  }
+  
+  if (TAG(d->tag) != STRING_TAG) {
+    len = shift + LEN(d->tag);
+    memcpy(start, obj - shift, shift * WORD);
+    to_space.current += len;
+    copy_elements(start + shift, obj, len - shift);
+  }
+  
+  *(size_t**)(d) = start + shift;
+  return *(size_t**)(d);
+}
 
 // @gc_test_and_copy_root checks if pointer is a root (i.e. valid heap pointer)
 //   and, if so, calls @gc_copy for each found root
-extern void gc_test_and_copy_root (size_t ** root) { NIMPL }
+extern void gc_test_and_copy_root (size_t ** root) {
+  if (IS_VALID_HEAP_POINTER(*root)) {
+    *root = gc_copy(*root);
+  }
+}
 
 // @gc_root_scan_data scans static area for root
 //   for each root it calls @gc_test_and_copy_root
-extern void gc_root_scan_data (void) { NIMPL }
+extern void gc_root_scan_data (void) {
+  for (size_t *pos = (size_t*)&__gc_data_start; pos < &__gc_data_end; ++pos) {
+    gc_test_and_copy_root((size_t**)pos);
+  }
+}
 
 // @init_pool is a memory pools initialization function
 //   (is called by L__gc_init from runtime/gc_runtime.s)
-extern void init_pool (void) { NIMPL }
+extern void init_pool (void) {
+  from_space.begin = mmap(NULL,
+                          SPACE_SIZE * WORD,
+                          PROT_READ|PROT_WRITE,
+                          MAP_ANON|MAP_PRIVATE, -1, 0);
+  from_space.current = from_space.begin;
+  from_space.end = from_space.begin + SPACE_SIZE;
+  from_space.size = SPACE_SIZE;
+  to_space.begin = mmap(NULL, 
+                        SPACE_SIZE * WORD, 
+                        PROT_READ|PROT_WRITE, 
+                        MAP_ANON|MAP_PRIVATE, -1, 0);
+  to_space.current = to_space.begin;
+  to_space.end = to_space.begin + SPACE_SIZE;
+  to_space.size = SPACE_SIZE;
+}
 
 // @free_pool frees memory pool p
-static int free_pool (pool * p) { NIMPL }
+static int free_pool (pool * p) {
+  p->current = p->begin;
+}
 
 // @gc performs stop-the-world mark-and-copy garbage collection
 //   and extends pools (i.e. calls @extend_spaces) if necessarily
@@ -515,10 +616,27 @@ static int free_pool (pool * p) { NIMPL }
 //   2) call @__gc_root_scan_stack (finds roots in program stack
 //        and calls @gc_test_and_copy_root for each found root)
 //   3) extends spaces if there is not enough space to be allocated after gc
-static void * gc (size_t size) { NIMPL }
+static void * gc (size_t size) {
+  free_pool(&to_space);
+  gc_root_scan_data();
+  __gc_root_scan_stack();
+  gc_swap_spaces();
+  while (from_space.current + size > from_space.end) {
+    extend_spaces();
+  }
+  return from_space.current;
+}
 
-// @alloc allocates @size memory words
-//   it enaibles garbage collection if out-of-memory,
+// @alloc allocates @size ---memory words--- bytes
+//   it enables garbage collection if out-of-memory,
 //   i.e. calls @gc when @current + @size > @from_space.end
 // returns a pointer to the allocated block of size @size
-extern void * alloc (size_t size) { NIMPL }
+extern void * alloc (size_t size) {
+  size_t word_cnt = (size + WORD - 1) / WORD;
+  if (from_space.current + word_cnt > from_space.end) {
+    gc(word_cnt);
+  }
+  current = from_space.current;
+  from_space.current += word_cnt;
+  return current;
+}
