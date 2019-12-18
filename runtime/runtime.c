@@ -488,8 +488,9 @@ static void gc_swap_spaces (void) {
 // checks if @p is a valid pointer to the active (from-) space
 // NOTE: looking at (p-1) since we have pointers at content, but the content
 //       can have size zero (like constructor without parameters, or
-//       empty array, or empty string), but the byte before that is always
+//       empty array, or empty string), but the word before that is always
 //       on the heap
+// NOTE: @p should have type (size_t*) for this (-1) to work correctly
 # define IS_VALID_HEAP_POINTER(p)\
 (!UNBOXED(p) &&		 \
 from_space.begin <= (p-1) &&	 \
