@@ -87,7 +87,7 @@ let rec eval env ((cstack, stack, ((st, i, o) as c)) as conf) = function
     | TAG (t, n)              -> let x::stack' = stack in
                                  eval env (cstack, (Value.of_int @@ match x with Value.Sexp (t', a) when t' = t && List.length a = n -> 1 | _ -> 0) :: stack', c) prg'
     | ARRAY n                 -> let x::stack' = stack in
-                                 eval env (cstack, (Value.of_int @@ match x with Value.Array a when List.length a = n -> 1 | _ -> 0) :: stack', c) prg'
+                                 eval env (cstack, (Value.of_int @@ match x with Value.Array a when Array.length a = n -> 1 | _ -> 0) :: stack', c) prg'
     | PATT StrCmp             -> let x::y::stack' = stack in
                                  eval env (cstack, (Value.of_int @@ match x, y with (Value.String xs, Value.String ys) when xs = ys -> 1 | _ -> 0) :: stack', c) prg'                                      
     | PATT Array              -> let x::stack' = stack in

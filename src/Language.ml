@@ -11,7 +11,7 @@ open Combinators
 module Value =
   struct
 
-    @type t = Int of int | String of string | Array of t list | Sexp of string * t list with show
+    @type t = Int of int | String of bytes | Array of t array | Sexp of string * t list with show
 
     let to_int = function 
     | Int n -> n 
@@ -27,29 +27,29 @@ module Value =
 
     let sexp   s vs = Sexp (s, vs)
     let of_int    n = Int    n
-    let of_string s = String s
+    let of_string s = String (Bytes.of_string s)
     let of_array  a = Array  a
 
     let tag_of = function
     | Sexp (t, _) -> t
     | _ -> failwith "symbolic expression expected"
 
-    let update_string s i x = String.init (String.length s) (fun j -> if j = i then x else s.[j])
-    let update_array  a i x = List.init   (List.length a)   (fun j -> if j = i then x else List.nth a j)
+    let update_string s i x = Bytes.set s i x; s 
+    let update_array  a i x = a.(i) <- x; a         
                                           
     let string_val v =
       let buf      = Buffer.create 128 in
       let append s = Buffer.add_string buf s in
       let rec inner = function
       | Int    n    -> append (string_of_int n)
-      | String s    -> append "\""; append s; append "\""
-      | Array  a    -> let n = List.length a in
-                       append "["; List.iteri (fun i a -> (if i > 0 then append ", "); inner a) a; append "]"
+      | String s    -> append "\""; append @@ Bytes.to_string s; append "\""
+      | Array  a    -> let n = Array.length a in
+                       append "["; Array.iteri (fun i a -> (if i > 0 then append ", "); inner a) a; append "]"
       | Sexp (t, a) -> let n = List.length a in
                        append "`"; append t; (if n > 0 then (append " ("; List.iteri (fun i a -> (if i > 0 then append ", "); inner a) a; append ")"))
       in
       inner v;
-      Buffer.contents buf
+      Bytes.of_string @@ Buffer.contents buf
                       
   end
        
@@ -125,14 +125,14 @@ module Builtin =
     | ".elem"    -> let [b; j] = args in
                     (st, i, o, let i = Value.to_int j in
                                Some (match b with
-                                     | Value.String   s  -> Value.of_int @@ Char.code s.[i]
-                                     | Value.Array    a  -> List.nth a i
+                                     | Value.String   s  -> Value.of_int @@ Char.code (Bytes.get s i)
+                                     | Value.Array    a  -> a.(i)
                                      | Value.Sexp (_, a) -> List.nth a i
                                )
                     )         
-    | ".length"     -> (st, i, o, Some (Value.of_int (match List.hd args with Value.Sexp (_, a) | Value.Array a -> List.length a | Value.String s -> String.length s)))
-    | ".array"      -> (st, i, o, Some (Value.of_array args))
-    | ".stringval"  -> let [a]    = args in (st, i, o, Some (Value.of_string @@ Value.string_val a))
+    | ".length"     -> (st, i, o, Some (Value.of_int (match List.hd args with Value.Sexp (_, a) -> List.length a | Value.Array a -> Array.length a | Value.String s -> Bytes.length s)))
+    | ".array"      -> (st, i, o, Some (Value.of_array @@ Array.of_list args))
+    | ".stringval"  -> let [a]    = args in (st, i, o, Some (Value.String (Value.string_val a)))
 
   end
     
@@ -205,7 +205,7 @@ module Expr =
       | String s    -> (st, i, o, Some (Value.of_string s))
       | StringVal s ->
          let (st, i, o, Some s) = eval env conf s in
-         (st, i, o, Some (Value.of_string @@ Value.string_val s))
+         (st, i, o, Some (Value.String (Value.string_val s)))
       | Var    x -> (st, i, o, Some (State.eval st x))
       | Array xs ->
          let (st, i, o, vs) = eval_list env conf xs in
@@ -349,8 +349,8 @@ module Stmt =
       | i::tl ->
           let i = Value.to_int i in
           (match a with
-           | Value.String s when tl = [] -> Value.String (Value.update_string s i (Char.chr @@ Value.to_int v))
-           | Value.Array a               -> Value.Array  (Value.update_array  a i (update (List.nth a i) v tl))
+          | Value.String s when tl = [] -> Value.String (Value.update_string s i (Char.chr @@ Value.to_int v))
+          | Value.Array a               -> Value.Array  (Value.update_array  a i (update a.(i) v tl))
           ) 
       in
       State.update x (match is with [] -> v | _ -> update (State.eval st x) v is) st
@@ -388,9 +388,9 @@ module Stmt =
                | Pattern.Named (x, p), v                                                                  -> update x v (match_patt p v st )
                | Pattern.Wildcard    , _                                                                  -> st
                | Pattern.Sexp (t, ps), Value.Sexp (t', vs) when t = t' && List.length ps = List.length vs -> match_list ps vs st
-               | Pattern.Array ps    , Value.Array vs when List.length ps = List.length vs                -> match_list ps vs st
+               | Pattern.Array ps    , Value.Array vs when List.length ps = Array.length vs                -> match_list ps (Array.to_list vs) st
                | Pattern.Const n     , Value.Int n'    when n = n'                                        -> st
-               | Pattern.String s    , Value.String s' when s = s'                                        -> st
+               | Pattern.String s    , Value.String s' when s = (Bytes.to_string s')                                        -> st
                | Pattern.Boxed       , Value.String _ 
                | Pattern.Boxed       , Value.Array  _
                | Pattern.UnBoxed     , Value.Int    _
